@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 
 const connectDB = async () => {
+
   try {
     const conn = await mongoose.connect(process.env.MONGODB_URI, {
       // These options are no longer needed in Mongoose 6+

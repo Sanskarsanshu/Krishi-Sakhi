@@ -282,7 +282,18 @@ const PestDetection = ({ onShowToast }) => {
 
       console.log('Response status:', response.status);
 
-      const data = await response.json();
+     // const data = await response.json();
+     const contentType = response.headers.get("content-type");
+
+let data;
+
+if (contentType && contentType.includes("application/json")) {
+  data = await response.json();
+} else {
+  const text = await response.text();
+  console.error("Server returned non-JSON:", text);
+  throw new Error("Server returned HTML instead of JSON (API crashed)");
+}
       console.log('API Response:', data);
       
       // Handle successful high-confidence prediction
