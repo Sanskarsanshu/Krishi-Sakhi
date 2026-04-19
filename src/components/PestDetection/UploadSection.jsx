@@ -1,9 +1,36 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { useTheme } from '../../context/ThemeContext';
 
 const UploadSection = ({ image, isAnalyzing, onUpload }) => {
   const { theme } = useTheme();
   const fileInputRef = useRef(null);
+
+  // ── Paste detection (Ctrl+V) ──────────────────────────────────────────────
+  useEffect(() => {
+    const handlePaste = (e) => {
+      if (isAnalyzing) return;
+
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const blob = item.getAsFile();
+          if (blob) {
+            // Convert blob to a proper File with a readable name
+            const file = new File([blob], `pasted-image.${blob.type.split('/')[1] || 'png'}`, {
+              type: blob.type,
+            });
+            onUpload(file);
+          }
+          break;
+        }
+      }
+    };
+
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, [isAnalyzing, onUpload]);
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -85,7 +112,7 @@ const UploadSection = ({ image, isAnalyzing, onUpload }) => {
             <p className={`text-sm ${
               theme === 'dark' ? 'text-gray-400' : 'text-gray-600'
             }`}>
-              Drag and drop or click to select
+              Drag & drop, click to select, or paste (Ctrl+V)
             </p>
             <p className={`text-xs ${
               theme === 'dark' ? 'text-gray-500' : 'text-gray-500'

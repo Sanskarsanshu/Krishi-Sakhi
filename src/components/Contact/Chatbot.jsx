@@ -2,173 +2,371 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTheme } from '../../context/ThemeContext';
 
+const GROQ_API_KEY   = import.meta.env.VITE_GROQ_API_KEY;
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+
+const SYSTEM_PROMPT = `You are Krishi-Sakhi, a friendly and knowledgeable AI assistant for Indian farmers.
+You help farmers with:
+- Crop disease and pest detection advice
+- Government agricultural schemes and subsidies
+- Market prices and selling strategies
+- Weather and irrigation guidance
+- Soil health and fertilizer recommendations
+- Financial planning for farming
+- General farming best practices
+
+Always respond in a warm, simple, and supportive tone. If a farmer asks in Hindi or mixed Hindi-English, respond in a way they can understand.
+Keep responses concise (2-4 sentences) unless a detailed answer is genuinely needed.
+Always stay focused on farming and agriculture topics. If asked unrelated questions, gently redirect to farming topics.`;
+
+// ─── Groq (Primary — 14,400 req/day free) ───────────────────────────────────
+const callGroq = async (messages) => {
+  if (!GROQ_API_KEY) throw new Error('NO_GROQ_KEY');
+
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: 'llama-3.1-8b-instant', // 14,400 req/day free
+      messages,
+      max_tokens: 450,
+      temperature: 0.7,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Groq error: ${res.status}`);
+  }
+
+  const data = await res.json();
+  const text = data?.choices?.[0]?.message?.content;
+  if (!text) throw new Error('Empty Groq response');
+  return text;
+};
+
+// ─── Gemini (Fallback — 1,500 req/day free) ──────────────────────────────────
+const callGemini = async (conversationHistory) => {
+  if (!GEMINI_API_KEY) throw new Error('NO_GEMINI_KEY');
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_API_KEY}`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: conversationHistory,
+      generationConfig: { temperature: 0.7, maxOutputTokens: 400 },
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Gemini error: ${res.status}`);
+  }
+
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error('Empty Gemini response');
+  return text;
+};
+
+// ─── Smart offline fallback ──────────────────────────────────────────────────
+const OFFLINE_RESPONSES = [
+  {
+    keywords: ['pest', 'insect', 'bug', 'kida', 'aphid', 'whitefly', 'locust'],
+    response: `🌿 For pest control:\n\n1. Inspect crops early morning when pests are most visible.\n2. Use neem oil spray (5 ml/litre water) as a natural pesticide.\n3. For severe infestations, contact your local Krishi Vigyan Kendra (KVK).\n4. Encourage natural predators like ladybugs by avoiding broad-spectrum chemicals.`,
+  },
+  {
+    keywords: ['disease', 'blight', 'fungus', 'rot', 'yellow', 'rust', 'wilt'],
+    response: `🍃 Common crop disease tips:\n\n1. Remove and destroy infected plant parts immediately.\n2. Use Bordeaux mixture for fungal diseases.\n3. Ensure proper plant spacing for air circulation.\n4. Water at the base — keep leaves dry. Visit your nearest agriculture office for treatment.`,
+  },
+  {
+    keywords: ['scheme', 'subsidy', 'yojana', 'government', 'pm kisan', 'loan', 'insurance', 'fasal bima'],
+    response: `💰 Key government schemes:\n\n• **PM-KISAN** — ₹6,000/year direct to farmer families\n• **PM Fasal Bima Yojana** — crop insurance with low premiums\n• **Kisan Credit Card** — loans at 4% interest\n• **PM Krishi Sinchayee Yojana** — irrigation support\n\nVisit pmkisan.gov.in or call 1800-180-1111 (free).`,
+  },
+  {
+    keywords: ['price', 'mandi', 'market', 'sell', 'rate', 'bhav', 'crop price'],
+    response: `📈 To get best crop prices:\n\n1. Check MSP at agmarknet.gov.in.\n2. Use e-NAM (enam.gov.in) to sell at online mandis.\n3. Form FPOs to negotiate better rates collectively.\n4. Use cold storage to sell when prices are higher.`,
+  },
+  {
+    keywords: ['soil', 'fertilizer', 'urea', 'dap', 'npk', 'compost', 'organic'],
+    response: `🌱 Soil health tips:\n\n1. Get a free soil test at your KVK — it tells you exactly what's missing.\n2. Use compost/vermicompost to improve organic matter.\n3. Follow recommended NPK ratio — over-fertilizing wastes money.\n4. Practise crop rotation to naturally restore nutrients.`,
+  },
+  {
+    keywords: ['water', 'irrigation', 'drip', 'sprinkler', 'rain', 'drought'],
+    response: `💧 Water management:\n\n1. Drip irrigation saves 40-60% water vs flood irrigation.\n2. Water crops early morning or evening to reduce evaporation.\n3. Mulching retains soil moisture longer.\n4. PM Krishi Sinchayee Yojana gives subsidies for drip/sprinkler systems.`,
+  },
+  {
+    keywords: ['weather', 'forecast', 'barish', 'temperature', 'frost', 'heat'],
+    response: `☁️ Weather tips:\n\n1. Use IMD's Meghdoot app for crop-specific forecasts.\n2. Check the 10-day forecast before sowing.\n3. Use shade nets during extreme heat for vegetable crops.\n4. Mulch young plants during cold nights to prevent frost damage.`,
+  },
+  {
+    keywords: ['wheat', 'rice', 'paddy', 'gehu', 'dhaan', 'corn', 'maize'],
+    response: `🌾 Wheat/paddy tips:\n\n1. Use certified seeds approved for your region.\n2. Wheat sowing: Oct 25–Nov 10; paddy transplanting varies by state.\n3. Watch for stem borer and brown planthopper in paddy.\n4. Wheat needs 4-5 irrigations; paddy needs 5cm standing water during growth.`,
+  },
+  {
+    keywords: ['finance', 'loan', 'credit', 'money', 'paisa', 'invest', 'kharcha'],
+    response: `💵 Farm financial planning:\n\n1. Keep a simple diary of all farming expenses.\n2. Kisan Credit Card gives up to ₹3 lakh credit at 4% interest.\n3. PMFBY crop insurance premium is only 1.5-2% for Rabi crops.\n4. Join an FPO for bulk buying discounts and better market rates.`,
+  },
+];
+
+const getOfflineFallback = (userMessage) => {
+  const lower = userMessage.toLowerCase();
+  for (const item of OFFLINE_RESPONSES) {
+    if (item.keywords.some((kw) => lower.includes(kw))) return item.response;
+  }
+  return `🌾 Our AI is temporarily unavailable. Here are some helpful resources:\n\n• **Pest/Disease help**: Contact your local KVK\n• **Government Schemes**: pmkisan.gov.in or call 1800-180-1111 (free)\n• **Market Prices**: agmarknet.gov.in\n• **Weather Forecast**: meghdoot.imd.gov.in\n\nPlease try sending your message again!`;
+};
+
+// ─── Main component ───────────────────────────────────────────────────────────
 const Chatbot = ({ onShowToast }) => {
   const { theme } = useTheme();
   const navigate = useNavigate();
+
   const [messages, setMessages] = useState([
-    { type: 'bot', text: 'Hi! How can I help you today? 👋', timestamp: new Date() }
+    {
+      type: 'bot',
+      text: "Jai Kisan! 🌾 I'm Krishi-Sakhi, your AI farming assistant. Ask me anything about crops, pests, government schemes, market prices, or farming tips!",
+      timestamp: new Date(),
+    },
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef(null);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  const inputRef = useRef(null);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isTyping]);
 
-  const getBotResponse = (userMessage) => {
-    const lowerMessage = userMessage.toLowerCase();
-    
-    if (lowerMessage.includes('hello') || lowerMessage.includes('hi')) {
-      return 'Hello! How can I assist you with your farming needs today?';
-    } else if (lowerMessage.includes('pest') || lowerMessage.includes('disease')) {
-      return 'For pest detection, please visit our Pest Detection page. You can upload images of your crops there for instant analysis.';
-    } else if (lowerMessage.includes('scheme') || lowerMessage.includes('subsidy')) {
-      return 'Check out our Schemes section to find government schemes and subsidies available for farmers in your area.';
-    } else if (lowerMessage.includes('price') || lowerMessage.includes('market')) {
-      return 'Visit our Marketplace to check current prices and connect with buyers. We provide real-time market data!';
-    } else if (lowerMessage.includes('help') || lowerMessage.includes('support')) {
-      return 'I\'m here to help! You can ask me about pest detection, market prices, government schemes, or any farming-related queries.';
-    } else {
-      return 'Thank you for your message! Our support team will get back to you within 24 hours. For immediate assistance, please call our helpline.';
+  // Build messages array for Groq (OpenAI format)
+  const buildGroqMessages = (history, newUserText) => {
+    const msgs = [{ role: 'system', content: SYSTEM_PROMPT }];
+    history
+      .filter((m) => m.type === 'user' || m.type === 'bot')
+      .slice(-8)
+      .forEach((m) => msgs.push({ role: m.type === 'user' ? 'user' : 'assistant', content: m.text }));
+    msgs.push({ role: 'user', content: newUserText });
+    return msgs;
+  };
+
+  // Build contents array for Gemini format
+  const buildGeminiContents = (history, newUserText) => {
+    const contents = history
+      .filter((m) => m.type === 'user' || m.type === 'bot')
+      .slice(-8)
+      .map((m) => ({ role: m.type === 'user' ? 'user' : 'model', parts: [{ text: m.text }] }));
+    contents.push({ role: 'user', parts: [{ text: newUserText }] });
+    return contents;
+  };
+
+  const getAIResponse = async (userText, history) => {
+    // 1️⃣ Try Groq first
+    if (GROQ_API_KEY) {
+      try {
+        return await callGroq(buildGroqMessages(history, userText));
+      } catch (err) {
+        console.warn('Groq failed, trying Gemini:', err.message);
+      }
+    }
+
+    // 2️⃣ Try Gemini as fallback
+    if (GEMINI_API_KEY) {
+      try {
+        return await callGemini(buildGeminiContents(history, userText));
+      } catch (err) {
+        console.warn('Gemini failed:', err.message);
+      }
+    }
+
+    // 3️⃣ Both failed — return null to trigger offline fallback
+    return null;
+  };
+
+  const sendMessage = async (userText, historySnapshot) => {
+    setIsTyping(true);
+    try {
+      const aiText = await getAIResponse(userText, historySnapshot);
+
+      if (aiText) {
+        setMessages((prev) => [
+          ...prev,
+          { type: 'bot', text: aiText, timestamp: new Date() },
+        ]);
+      } else {
+        // Both APIs down — show topic-specific offline answer
+        setMessages((prev) => [
+          ...prev,
+          {
+            type: 'bot',
+            text: getOfflineFallback(userText),
+            timestamp: new Date(),
+            isOffline: true,
+          },
+        ]);
+      }
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          type: 'bot',
+          text: getOfflineFallback(userText),
+          timestamp: new Date(),
+          isOffline: true,
+        },
+      ]);
+    } finally {
+      setIsTyping(false);
     }
   };
 
-  const handleSend = (e) => {
+  const handleSend = async (e) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() || isTyping) return;
 
-    const userMessage = { type: 'user', text: input, timestamp: new Date() };
-    setMessages(prev => [...prev, userMessage]);
+    const userText = input.trim();
+    const historySnapshot = [...messages];
+    setMessages((prev) => [...prev, { type: 'user', text: userText, timestamp: new Date() }]);
     setInput('');
-    setIsTyping(true);
-
-    // Simulate bot typing delay
-    setTimeout(() => {
-      const botResponse = getBotResponse(input);
-      setMessages(prev => [...prev, { 
-        type: 'bot', 
-        text: botResponse,
-        timestamp: new Date()
-      }]);
-      setIsTyping(false);
-    }, 1000 + Math.random() * 1000);
+    sendMessage(userText, historySnapshot);
   };
 
   const quickReplies = [
-    'Pest detection help',
-    'Government schemes',
-    'Market prices',
-    'Contact support'
+    '🌿 Pest detection help',
+    '💰 Government schemes',
+    '📈 Current market prices',
+    '🌱 Soil health tips',
+    '💧 Irrigation advice',
   ];
 
   const handleQuickReply = (reply) => {
-    setInput(reply);
+    setInput(reply.replace(/^[^\w\s]+\s*/, ''));
+    inputRef.current?.focus();
   };
 
-  const handleClose = () => {
-    navigate('/dashboard', { replace: true });
-  };
+  const dark = theme === 'dark';
 
   return (
-    <div className={`min-h-full p-4 sm:p-6 transition-colors duration-300 ${
-      theme === 'dark' ? 'bg-gray-900' : 'bg-gray-50'
-    }`}>
+    <div className={`min-h-full p-4 sm:p-6 transition-colors duration-300 ${dark ? 'bg-gray-900' : 'bg-gray-50'}`}>
       <div className="container mx-auto max-w-4xl h-full">
-        <div className={`rounded-lg shadow-xl transition-colors duration-300 ${
-          theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-        } border flex flex-col`} style={{ height: 'calc(100vh - 200px)' }}>
-          
-          {/* Header */}
-          <div className="bg-gradient-to-r from-blue-500 to-cyan-500 p-4 sm:p-6 rounded-t-lg flex items-center gap-4">
+        <div
+          className={`rounded-xl shadow-2xl transition-colors duration-300 ${
+            dark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+          } border flex flex-col`}
+          style={{ height: 'calc(100vh - 140px)' }}
+        >
+          {/* ── Header ── */}
+          <div className="bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 p-4 sm:p-5 rounded-t-xl flex items-center gap-4 shadow-md">
             <button
-              onClick={handleClose}
-              className="p-2 hover:bg-white/20 rounded-full transition-colors"
+              onClick={() => navigate('/dashboard', { replace: true })}
+              className="p-2 hover:bg-white/20 rounded-full transition-colors flex-shrink-0"
               title="Back to Dashboard"
             >
-              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
             </button>
-            <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center">
-              <svg className="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
+
+            <div className="w-11 h-11 bg-white/20 backdrop-blur rounded-full flex items-center justify-center flex-shrink-0 text-xl">
+              🌾
             </div>
-            <div className="flex-1">
-              <h1 className="text-white text-xl font-bold">Krishi-Sakhi Support</h1>
-              <p className="text-blue-100 text-sm flex items-center gap-2">
-                <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
-                Online - We typically reply within minutes
+
+            <div className="flex-1 min-w-0">
+              <h1 className="text-white text-lg font-bold leading-tight">Krishi-Sakhi AI Assistant</h1>
+              <p className="text-emerald-100 text-xs flex items-center gap-1.5 mt-0.5">
+                <span className="w-2 h-2 bg-green-300 rounded-full animate-pulse inline-block" />
+                Powered by Groq · Always here to help
               </p>
+            </div>
+
+            <div className="hidden sm:flex items-center gap-1.5 bg-white/15 rounded-full px-3 py-1.5">
+              <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" />
+              </svg>
+              <span className="text-white text-xs font-medium">Llama 3.1</span>
             </div>
           </div>
 
-          {/* Messages */}
-          <div className={`flex-1 overflow-y-auto p-4 space-y-4 ${
-            theme === 'dark' ? 'bg-gray-900' : 'bg-gray-50'
-          }`}>
+          {/* ── Messages ── */}
+          <div className={`flex-1 overflow-y-auto p-4 space-y-3 ${dark ? 'bg-gray-900' : 'bg-gray-50'}`}>
             {messages.map((msg, idx) => (
-              <div key={idx} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'} animate-fadeIn`}>
-                <div className={`max-w-[75%] sm:max-w-[70%] rounded-lg p-3 shadow-md ${
-                  msg.type === 'user'
-                    ? 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white rounded-br-none'
-                    : theme === 'dark'
-                    ? 'bg-gray-700 text-white rounded-bl-none'
-                    : 'bg-white text-gray-800 rounded-bl-none border border-gray-200'
-                }`}>
-                  <p className="text-sm sm:text-base">{msg.text}</p>
-                  <p className={`text-xs mt-1 ${
-                    msg.type === 'user' ? 'text-blue-100' : theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
-                  }`}>
+              <div key={idx} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+                {msg.type === 'bot' && (
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-sm mr-2 flex-shrink-0 self-end mb-1">
+                    🌾
+                  </div>
+                )}
+                <div
+                  className={`max-w-[78%] sm:max-w-[72%] rounded-2xl p-3 shadow-sm ${
+                    msg.type === 'user'
+                      ? 'bg-gradient-to-br from-emerald-500 to-teal-500 text-white rounded-br-none'
+                      : msg.isOffline
+                      ? dark
+                        ? 'bg-amber-900/30 text-amber-100 rounded-bl-none border border-amber-700'
+                        : 'bg-amber-50 text-amber-900 rounded-bl-none border border-amber-200'
+                      : dark
+                      ? 'bg-gray-700 text-gray-100 rounded-bl-none'
+                      : 'bg-white text-gray-800 rounded-bl-none border border-gray-200'
+                  }`}
+                >
+                  <p className="text-sm sm:text-[15px] leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                  {msg.isOffline && (
+                    <p className="text-[10px] mt-1.5 opacity-60 italic">📡 Offline knowledge response</p>
+                  )}
+                  <p className={`text-[10px] mt-1 ${msg.type === 'user' ? 'text-emerald-100' : dark ? 'text-gray-400' : 'text-gray-400'}`}>
                     {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </p>
                 </div>
+                {msg.type === 'user' && (
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-sm ml-2 flex-shrink-0 self-end mb-1">
+                    👤
+                  </div>
+                )}
               </div>
             ))}
-            
+
+            {/* Typing indicator */}
             {isTyping && (
-              <div className="flex justify-start animate-fadeIn">
-                <div className={`rounded-lg p-3 shadow-md ${
-                  theme === 'dark' ? 'bg-gray-700' : 'bg-white border border-gray-200'
-                }`}>
-                  <div className="flex gap-1">
-                    <span className={`w-2 h-2 rounded-full animate-bounce ${
-                      theme === 'dark' ? 'bg-gray-400' : 'bg-gray-500'
-                    }`} style={{ animationDelay: '0ms' }}></span>
-                    <span className={`w-2 h-2 rounded-full animate-bounce ${
-                      theme === 'dark' ? 'bg-gray-400' : 'bg-gray-500'
-                    }`} style={{ animationDelay: '150ms' }}></span>
-                    <span className={`w-2 h-2 rounded-full animate-bounce ${
-                      theme === 'dark' ? 'bg-gray-400' : 'bg-gray-500'
-                    }`} style={{ animationDelay: '300ms' }}></span>
+              <div className="flex justify-start">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center text-sm mr-2 flex-shrink-0 self-end mb-1">
+                  🌾
+                </div>
+                <div className={`rounded-2xl rounded-bl-none p-3 shadow-sm ${dark ? 'bg-gray-700' : 'bg-white border border-gray-200'}`}>
+                  <div className="flex gap-1 items-center h-5">
+                    {[0, 160, 320].map((delay) => (
+                      <span
+                        key={delay}
+                        className="w-2 h-2 rounded-full animate-bounce bg-gray-400"
+                        style={{ animationDelay: `${delay}ms` }}
+                      />
+                    ))}
                   </div>
                 </div>
               </div>
             )}
-            
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Quick Replies */}
-          {messages.length === 1 && (
-            <div className={`px-4 pb-2 ${theme === 'dark' ? 'bg-gray-900' : 'bg-gray-50'}`}>
-              <p className={`text-xs mb-2 ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
-                Quick replies:
+          {/* ── Quick Replies ── */}
+          {messages.length === 1 && !isTyping && (
+            <div className={`px-4 pb-3 ${dark ? 'bg-gray-900' : 'bg-gray-50'}`}>
+              <p className={`text-xs mb-2 font-medium ${dark ? 'text-gray-400' : 'text-gray-500'}`}>
+                Suggested questions:
               </p>
               <div className="flex flex-wrap gap-2">
                 {quickReplies.map((reply, idx) => (
                   <button
                     key={idx}
                     onClick={() => handleQuickReply(reply)}
-                    className={`text-xs px-3 py-1.5 rounded-full border transition-all hover:scale-105 ${
-                      theme === 'dark'
-                        ? 'border-gray-600 text-gray-300 hover:bg-gray-700'
-                        : 'border-gray-300 text-gray-700 hover:bg-gray-100'
+                    className={`text-xs px-3 py-1.5 rounded-full border transition-all hover:scale-105 active:scale-95 ${
+                      dark
+                        ? 'border-emerald-700 text-emerald-300 hover:bg-emerald-900/40'
+                        : 'border-emerald-300 text-emerald-700 hover:bg-emerald-50'
                     }`}
                   >
                     {reply}
@@ -178,33 +376,38 @@ const Chatbot = ({ onShowToast }) => {
             </div>
           )}
 
-          {/* Input */}
-          <form onSubmit={handleSend} className={`p-4 border-t ${
-            theme === 'dark' ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'
-          }`}>
-            <div className="flex gap-2">
+          {/* ── Input ── */}
+          <form
+            onSubmit={handleSend}
+            className={`p-3 sm:p-4 border-t ${dark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'} rounded-b-xl`}
+          >
+            <div className="flex gap-2 items-center">
               <input
+                ref={inputRef}
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Type your message..."
-                className={`flex-1 rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all ${
-                  theme === 'dark'
+                placeholder={isTyping ? 'Thinking...' : 'Ask about crops, pests, schemes...'}
+                disabled={isTyping}
+                className={`flex-1 rounded-full px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all disabled:opacity-60 border ${
+                  dark
                     ? 'bg-gray-700 text-white placeholder-gray-400 border-gray-600'
-                    : 'bg-gray-100 text-gray-800 placeholder-gray-500 border-gray-300'
-                } border`}
+                    : 'bg-gray-100 text-gray-800 placeholder-gray-500 border-gray-200'
+                }`}
               />
               <button
                 type="submit"
-                disabled={!input.trim()}
-                className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white px-6 py-2.5 rounded-lg hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                disabled={!input.trim() || isTyping}
+                className="bg-gradient-to-r from-emerald-500 to-teal-500 text-white w-10 h-10 sm:w-11 sm:h-11 rounded-full hover:shadow-lg hover:scale-105 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 flex items-center justify-center flex-shrink-0"
               >
-                <span className="hidden sm:inline">Send</span>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                 </svg>
               </button>
             </div>
+            <p className={`text-center text-[10px] mt-2 ${dark ? 'text-gray-500' : 'text-gray-400'}`}>
+              Powered by Groq (Llama 3.1) · Gemini fallback · Responses may not always be accurate
+            </p>
           </form>
         </div>
       </div>

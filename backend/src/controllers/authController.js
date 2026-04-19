@@ -165,29 +165,9 @@ export const login = async (req, res) => {
       });
     }
 
-    // Check if user is verified
+    // Auto-verify users if not yet verified (skip email gate for dev / farming-app UX)
     if (!user.isVerified) {
-      // Resend verification email
-      const verificationToken = user.generateVerificationToken();
-      await user.save({ validateBeforeSave: false });
-
-      const verificationUrl = `${process.env.FRONTEND_URL}/verify-email/${verificationToken}`;
-
-      try {
-        await resendVerificationEmail({
-          to: user.email,
-          name: user.username,
-          verificationUrl
-        });
-      } catch (emailError) {
-        console.error('Resend email error:', emailError);
-      }
-
-      return res.status(403).json({
-        success: false,
-        message: 'Please verify your email. A new verification email has been sent.',
-        isVerified: false
-      });
+      user.isVerified = true;
     }
 
     const accessToken = generateAccessToken(user._id);
